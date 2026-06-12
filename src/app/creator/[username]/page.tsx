@@ -1,37 +1,39 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import * as StellarSdk from "stellar-sdk";
 import { useWallet } from "@/hooks/useWallet";
-import Button from "@/components/Button";
-import Toast from "@/components/Toast";
 import { api } from "@/services/api";
 import { buildPaymentTx, signAndSubmitTx } from "@/services/stellar";
+import { HORIZON_URL } from "@/utils";
+import Button from "@/components/Button";
+import Toast from "@/components/Toast";
+
+const XLM_ASSET = { code: "XLM", issuer: "" };
 
 interface Props {
   params: { username: string };
 }
 
-function horizonErrorMessage(err: unknown): string {
-  const codes: string[] = (err as any)?.response?.data?.extras?.result_codes?.operations ?? [];
-  const txCode: string = (err as any)?.response?.data?.extras?.result_codes?.transaction ?? "";
-  const all = [...codes, txCode];
-  if (all.includes("tx_insufficient_balance") || all.includes("op_underfunded")) return "Insufficient XLM balance";
-  if (all.includes("op_no_destination")) return "Destination account does not exist";
-  return `Transaction failed: ${(err as Error).message}`;
-}
-
 export default function CreatorPage({ params }: Props) {
   const { username } = params;
   const { connected, connect, address } = useWallet();
-  const [creator, setCreator] = useState<{ username: string; bio: string; stellarAddress: string } | null>(null);
+  const [creator, setCreator] = useState<{ username: string; bio: string; stellarAddress: string; acceptedAssets: { code: string; issuer: string }[] } | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [amount, setAmount] = useState("10");
+  const [selectedAsset, setSelectedAsset] = useState(XLM_ASSET);
+  const [assetOptions, setAssetOptions] = useState([XLM_ASSET]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
 
   useEffect(() => {
     api.getCreator(username)
-      .then(setCreator)
+      .then((c) => {
+        setCreator(c);
+        const opts = [XLM_ASSET, ...(c.acceptedAssets ?? [])];
+        setAssetOptions(opts);
+        setSelectedAsset(opts[0]);
+      })
       .catch((err: Error) => {
         if (err.message.includes("404")) setFetchError("Creator not found.");
         else setFetchError(`Could not load creator: ${err.message}`);
@@ -42,14 +44,36 @@ export default function CreatorPage({ params }: Props) {
     if (!connected) { await connect(); return; }
     if (!creator?.stellarAddress) { setToast({ message: "Creator has no Stellar address registered.", type: "error" }); return; }
 
+    // Balance check
+    try {
+      const server = new StellarSdk.Horizon.Server(HORIZON_URL);
+      const account = await server.loadAccount(address!);
+      const balanceEntry = account.balances.find((b) =>
+        selectedAsset.code === "XLM"
+          ? b.asset_type === "native"
+          : "asset_code" in b && b.asset_code === selectedAsset.code && b.asset_issuer === selectedAsset.issuer
+      );
+      const bal = parseFloat((balanceEntry as { balance: string } | undefined)?.balance ?? "0");
+      if (bal < parseFloat(amount)) {
+        setToast({ message: `Insufficient ${selectedAsset.code} balance`, type: "error" });
+        return;
+      }
+    } catch {
+      setToast({ message: "Failed to check balance.", type: "error" });
+      return;
+    }
+
     setLoading(true);
     try {
-      const xdr = await buildPaymentTx(address!, creator.stellarAddress, amount);
+      const asset =
+        selectedAsset.code === "XLM"
+          ? StellarSdk.Asset.native()
+          : new StellarSdk.Asset(selectedAsset.code, selectedAsset.issuer);
+      const xdr = await buildPaymentTx(address!, creator.stellarAddress, amount, asset);
       const hash = await signAndSubmitTx(xdr);
-      setToast({ message: `Tip sent! Tx: ${hash.slice(0, 8)}…${hash.slice(-4)}`, type: "success" });
+      setToast({ message: `Tip sent in ${selectedAsset.code}! Tx: ${hash.slice(0, 8)}…${hash.slice(-4)}`, type: "success" });
     } catch (err) {
-      const isHorizonErr = !!(err as any)?.response?.data?.extras;
-      setToast({ message: isHorizonErr ? horizonErrorMessage(err) : `Transaction failed: ${(err as Error).message}`, type: "error" });
+      setToast({ message: err instanceof Error ? err.message : "Transaction failed", type: "error" });
     } finally {
       setLoading(false);
     }
@@ -78,7 +102,22 @@ export default function CreatorPage({ params }: Props) {
 
       <div className="bg-gray-800 rounded-xl p-6 flex flex-col gap-4">
         <label className="flex flex-col gap-1 text-sm">
-          Amount (XLM)
+          Asset
+          <select
+            value={`${selectedAsset.code}:${selectedAsset.issuer}`}
+            onChange={(e) => {
+              const opt = assetOptions.find((a) => `${a.code}:${a.issuer}` === e.target.value) ?? XLM_ASSET;
+              setSelectedAsset(opt);
+            }}
+            className="mt-1 px-3 py-2 rounded-lg bg-gray-700 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {assetOptions.map((a) => (
+              <option key={`${a.code}:${a.issuer}`} value={`${a.code}:${a.issuer}`}>{a.code}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          Amount ({selectedAsset.code})
           <input
             type="number"
             min="1"

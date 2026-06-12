@@ -10,7 +10,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getCreator: (username: string) => request<{ username: string; bio: string; stellarAddress: string }>(`/creators/${username}`),
+  getCreator: (username: string) =>
+    request<{ username: string; bio: string; stellarAddress: string; acceptedAssets: { code: string; issuer: string }[] }>(
+      `/creators/${username}`
+    ),
   getCreators: () => request<{ username: string }[]>("/creators"),
   sendTip: (to: string, amount: number) =>
     request<{ txHash: string }>("/tips", {
