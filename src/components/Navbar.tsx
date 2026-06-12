@@ -25,6 +25,16 @@ export default function Navbar() {
           </Link>
         </li>
         <li>
+          <Link href="/register" className="hover:text-white transition">
+            Register
+          </Link>
+        </li>
+        <li>
+          <Link href="/history" className="hover:text-white transition">
+            History
+          </Link>
+        </li>
+        <li>
           {connected ? (
             <button
               onClick={disconnect}

@@ -4,26 +4,22 @@ import { useState, useEffect } from "react";
 import CreatorCard from "@/components/CreatorCard";
 import Skeleton from "@/components/Skeleton";
 import ErrorBoundary from "@/components/ErrorBoundary";
-
-const MOCK_CREATORS = [
-  { username: "alice", bio: "Digital artist & illustrator" },
-  { username: "bob", bio: "Open-source developer" },
-  { username: "carol", bio: "Music producer & beatmaker" },
-  { username: "dave", bio: "Writer & content creator" },
-  { username: "eve", bio: "Photographer & visual storyteller" },
-  { username: "frank", bio: "Indie game developer" },
-];
+import { api } from "@/services/api";
 
 export default function ExplorePage() {
+  const [creators, setCreators] = useState<{ username: string; bio?: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const t = setTimeout(() => setIsLoading(false), 800);
-    return () => clearTimeout(t);
+    api.getCreators()
+      .then(setCreators)
+      .catch((err: Error) => setError(`Could not load creators: ${err.message}`))
+      .finally(() => setLoading(false));
   }, []);
 
-  const filtered = MOCK_CREATORS.filter((c) =>
+  const filtered = creators.filter((c) =>
     c.username.toLowerCase().includes(query.toLowerCase())
   );
 
@@ -42,7 +38,7 @@ export default function ExplorePage() {
         className="w-full mb-8 px-4 py-2 rounded-lg bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
       <ErrorBoundary>
-        {isLoading ? (
+        {loading ? (
           <ul className="grid grid-cols-2 sm:grid-cols-3 gap-4" aria-busy="true" aria-label="Loading">
             {Array.from({ length: 6 }).map((_, i) => (
               <li key={i}>
@@ -54,6 +50,8 @@ export default function ExplorePage() {
               </li>
             ))}
           </ul>
+        ) : error ? (
+          <p className="text-red-400">{error}</p>
         ) : filtered.length === 0 ? (
           <p className="text-gray-400">
             {query ? `No results for "${query}"` : "No creators registered yet"}

@@ -1,30 +1,92 @@
 "use client";
 
 import { useState } from "react";
+import * as StellarSdk from "stellar-sdk";
 import { useWallet } from "@/hooks/useWallet";
+import { api } from "@/services/api";
+import { buildPaymentTx, signAndSubmitTx } from "@/services/stellar";
+import { HORIZON_URL } from "@/utils";
 import Button from "@/components/Button";
 import Toast from "@/components/Toast";
+
+function horizonErrorMessage(err: unknown): string {
+  const codes: string[] = (err as any)?.response?.data?.extras?.result_codes?.operations ?? [];
+  const txCode: string = (err as any)?.response?.data?.extras?.result_codes?.transaction ?? "";
+  const all = [...codes, txCode];
+  if (all.includes("tx_insufficient_balance") || all.includes("op_underfunded")) return "Insufficient XLM balance";
+  if (all.includes("op_no_destination")) return "Destination account does not exist";
+  return `Transaction failed: ${(err as Error).message}`;
+}
+
+const XLM_ASSET = { code: "XLM", issuer: "" };
 
 export default function TipsPage() {
   const { connected, connecting, connect, address } = useWallet();
   const [to, setTo] = useState("");
   const [amount, setAmount] = useState("10");
+  const [selectedAsset, setSelectedAsset] = useState(XLM_ASSET);
+  const [assetOptions, setAssetOptions] = useState([XLM_ASSET]);
+  const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+
+  async function handleToBlur() {
+    if (!to) return;
+    try {
+      const creator = await api.getCreator(to);
+      const opts = [XLM_ASSET, ...(creator.acceptedAssets ?? [])];
+      setAssetOptions(opts);
+      setSelectedAsset(opts[0]);
+    } catch {
+      setAssetOptions([XLM_ASSET]);
+      setSelectedAsset(XLM_ASSET);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!connected) {
-      await connect();
-      return;
-    }
+    if (!connected) { await connect(); return; }
     if (!to || !amount) {
       setToast({ message: "Please fill in all fields.", type: "error" });
       return;
     }
-    // Tip submission placeholder — wire to Stellar SDK in next milestone
-    setToast({ message: `Tip of ${amount} XLM sent to @${to}!`, type: "success" });
-    setTo("");
-    setAmount("10");
+
+    // Balance check
+    try {
+      const server = new StellarSdk.Horizon.Server(HORIZON_URL);
+      const account = await server.loadAccount(address!);
+      const balanceEntry = account.balances.find((b) =>
+        selectedAsset.code === "XLM"
+          ? b.asset_type === "native"
+          : "asset_code" in b && b.asset_code === selectedAsset.code && b.asset_issuer === selectedAsset.issuer
+      );
+      const bal = parseFloat((balanceEntry as { balance: string } | undefined)?.balance ?? "0");
+      if (bal < parseFloat(amount)) {
+        setToast({ message: `Insufficient ${selectedAsset.code} balance`, type: "error" });
+        return;
+      }
+    } catch {
+      setToast({ message: "Failed to check balance.", type: "error" });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const creator = await api.getCreator(to);
+      const asset =
+        selectedAsset.code === "XLM"
+          ? StellarSdk.Asset.native()
+          : new StellarSdk.Asset(selectedAsset.code, selectedAsset.issuer);
+      const xdr = await buildPaymentTx(address!, creator.stellarAddress, amount, asset);
+      const hash = await signAndSubmitTx(xdr);
+      setToast({ message: `Tip sent in ${selectedAsset.code}! Tx: ${hash.slice(0, 8)}…${hash.slice(-4)}`, type: "success" });
+      setTo("");
+      setAmount("10");
+    } catch (err) {
+      const isHorizonErr = !!(err as any)?.response?.data?.extras;
+      setToast({ message: isHorizonErr ? horizonErrorMessage(err) : `Transaction failed: ${(err as Error).message}`, type: "error" });
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -50,12 +112,28 @@ export default function TipsPage() {
               placeholder="alice"
               value={to}
               onChange={(e) => setTo(e.target.value)}
+              onBlur={handleToBlur}
               required
               className="mt-1 px-3 py-2 rounded-lg bg-gray-700 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            Amount (XLM)
+            Asset
+            <select
+              value={`${selectedAsset.code}:${selectedAsset.issuer}`}
+              onChange={(e) => {
+                const opt = assetOptions.find((a) => `${a.code}:${a.issuer}` === e.target.value) ?? XLM_ASSET;
+                setSelectedAsset(opt);
+              }}
+              className="mt-1 px-3 py-2 rounded-lg bg-gray-700 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {assetOptions.map((a) => (
+                <option key={`${a.code}:${a.issuer}`} value={`${a.code}:${a.issuer}`}>{a.code}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            Amount ({selectedAsset.code})
             <input
               type="number"
               min="1"
@@ -65,7 +143,7 @@ export default function TipsPage() {
               className="mt-1 px-3 py-2 rounded-lg bg-gray-700 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </label>
-          <Button type="submit">Send Tip</Button>
+          <Button type="submit" disabled={loading}>{loading ? "Sending…" : "Send Tip"}</Button>
         </form>
       )}
 
