@@ -17,4 +17,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ to, amount }),
     }),
+  registerCreator: (username: string, bio: string, stellarAddress: string) =>
+    request<{ username: string }>("/creators", {
+      method: "POST",
+      body: JSON.stringify({ username, bio, stellarAddress }),
+    }),
 };

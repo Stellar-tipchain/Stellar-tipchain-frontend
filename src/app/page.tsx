@@ -15,6 +15,9 @@ export default function Home() {
         <Link href="/tips">
           <Button variant="outline">Send a Tip</Button>
         </Link>
+        <Link href="/register">
+          <Button variant="outline">Register as Creator</Button>
+        </Link>
       </div>
     </section>
   );
