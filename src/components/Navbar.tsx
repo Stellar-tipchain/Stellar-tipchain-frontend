@@ -28,13 +28,13 @@ export default function Navbar() {
           {connected ? (
             <button
               onClick={disconnect}
-              className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition"
-              title="Click to disconnect"
+              aria-label="Disconnect wallet"
+              className="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
             >
               {truncateAddress(address!)}
             </button>
           ) : (
-            <Button onClick={connect} disabled={connecting}>
+            <Button onClick={connect} disabled={connecting} aria-label="Connect wallet">
               {connecting ? "Connecting…" : "Connect Wallet"}
             </Button>
           )}
