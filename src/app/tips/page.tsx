@@ -1,97 +1,54 @@
 "use client";
 
 import { useState } from "react";
-import * as StellarSdk from "stellar-sdk";
-import { useWallet } from "@/hooks/useWallet";
 import { api } from "@/services/api";
-import { buildPaymentTx, signAndSubmitTx } from "@/services/stellar";
-import { HORIZON_URL } from "@/utils";
+import { useWallet } from "@/hooks/useWallet";
+import { useToast } from "@/components/ToastProvider";
+import { toUserMessage } from "@/lib/errors";
+import { XLM } from "@/constants";
+import type { Creator } from "@/types";
 import Button from "@/components/Button";
-import Toast from "@/components/Toast";
+import Input from "@/components/Input";
+import PageHeader from "@/components/PageHeader";
+import TipForm from "@/components/TipForm";
+import Spinner from "@/components/Spinner";
+import Alert from "@/components/Alert";
 
-function horizonErrorMessage(err: unknown): string {
-  const codes: string[] = (err as any)?.response?.data?.extras?.result_codes?.operations ?? [];
-  const txCode: string = (err as any)?.response?.data?.extras?.result_codes?.transaction ?? "";
-  const all = [...codes, txCode];
-  if (all.includes("tx_insufficient_balance") || all.includes("op_underfunded")) return "Insufficient XLM balance";
-  if (all.includes("op_no_destination")) return "Destination account does not exist";
-  return `Transaction failed: ${(err as Error).message}`;
-}
-
-const XLM_ASSET = { code: "XLM", issuer: "" };
-
+/**
+ * Standalone tip form. The recipient is resolved by username first, so the tip
+ * form only ever renders once a real Stellar address is known — the previous
+ * version let a user fill in an amount before discovering the creator did not
+ * exist.
+ */
 export default function TipsPage() {
-  const { connected, connecting, connect, address } = useWallet();
-  const [to, setTo] = useState("");
-  const [amount, setAmount] = useState("10");
-  const [selectedAsset, setSelectedAsset] = useState(XLM_ASSET);
-  const [assetOptions, setAssetOptions] = useState([XLM_ASSET]);
-  const [loading, setLoading] = useState(false);
-  const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+  const { connected, connecting, connect } = useWallet();
+  const { error: errorToast } = useToast();
 
-  async function handleToBlur() {
-    if (!to) return;
+  const [username, setUsername] = useState("");
+  const [creator, setCreator] = useState<Creator | null>(null);
+  const [looking, setLooking] = useState(false);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+
+  async function handleLookup(event: React.FormEvent) {
+    event.preventDefault();
+    if (!username.trim()) return;
+
+    setLooking(true);
+    setLookupError(null);
     try {
-      const creator = await api.getCreator(to);
-      const opts = [XLM_ASSET, ...(creator.acceptedAssets ?? [])];
-      setAssetOptions(opts);
-      setSelectedAsset(opts[0]);
-    } catch {
-      setAssetOptions([XLM_ASSET]);
-      setSelectedAsset(XLM_ASSET);
-    }
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!connected) { await connect(); return; }
-    if (!to || !amount) {
-      setToast({ message: "Please fill in all fields.", type: "error" });
-      return;
-    }
-
-    // Balance check
-    try {
-      const server = new StellarSdk.Horizon.Server(HORIZON_URL);
-      const account = await server.loadAccount(address!);
-      const balanceEntry = account.balances.find((b) =>
-        selectedAsset.code === "XLM"
-          ? b.asset_type === "native"
-          : "asset_code" in b && b.asset_code === selectedAsset.code && b.asset_issuer === selectedAsset.issuer
-      );
-      const bal = parseFloat((balanceEntry as { balance: string } | undefined)?.balance ?? "0");
-      if (bal < parseFloat(amount)) {
-        setToast({ message: `Insufficient ${selectedAsset.code} balance`, type: "error" });
-        return;
-      }
-    } catch {
-      setToast({ message: "Failed to check balance.", type: "error" });
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const creator = await api.getCreator(to);
-      const asset =
-        selectedAsset.code === "XLM"
-          ? StellarSdk.Asset.native()
-          : new StellarSdk.Asset(selectedAsset.code, selectedAsset.issuer);
-      const xdr = await buildPaymentTx(address!, creator.stellarAddress, amount, asset);
-      const hash = await signAndSubmitTx(xdr);
-      setToast({ message: `Tip sent in ${selectedAsset.code}! Tx: ${hash.slice(0, 8)}…${hash.slice(-4)}`, type: "success" });
-      setTo("");
-      setAmount("10");
+      setCreator(await api.getCreator(username.trim()));
     } catch (err) {
-      const isHorizonErr = !!(err as any)?.response?.data?.extras;
-      setToast({ message: isHorizonErr ? horizonErrorMessage(err) : `Transaction failed: ${(err as Error).message}`, type: "error" });
+      setCreator(null);
+      setLookupError(toUserMessage(err));
+      errorToast(toUserMessage(err));
     } finally {
-      setLoading(false);
+      setLooking(false);
     }
   }
 
   return (
     <section className="max-w-md mx-auto px-4 py-16 flex flex-col gap-6">
-      <h1 className="text-3xl font-bold">Send a Tip</h1>
+      <PageHeader title="Send a Tip" description="Find a creator by username, then send." />
 
       {!connected && (
         <div className="bg-gray-800 rounded-xl p-5 flex flex-col gap-3 text-center">
@@ -103,51 +60,39 @@ export default function TipsPage() {
       )}
 
       {connected && (
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4 bg-gray-800 rounded-xl p-6">
-          <p className="text-xs text-gray-500">Connected: {address?.slice(0, 8)}…</p>
-          <label className="flex flex-col gap-1 text-sm">
-            Creator username
-            <input
-              type="text"
+        <>
+          <form onSubmit={handleLookup} className="flex flex-col gap-3 bg-gray-800 rounded-xl p-6">
+            <Input
+              label="Creator username"
               placeholder="alice"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              onBlur={handleToBlur}
               required
-              className="mt-1 px-3 py-2 rounded-lg bg-gray-700 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Asset
-            <select
-              value={`${selectedAsset.code}:${selectedAsset.issuer}`}
+              value={username}
               onChange={(e) => {
-                const opt = assetOptions.find((a) => `${a.code}:${a.issuer}` === e.target.value) ?? XLM_ASSET;
-                setSelectedAsset(opt);
+                setUsername(e.target.value);
+                setCreator(null);
               }}
-              className="mt-1 px-3 py-2 rounded-lg bg-gray-700 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {assetOptions.map((a) => (
-                <option key={`${a.code}:${a.issuer}`} value={`${a.code}:${a.issuer}`}>{a.code}</option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Amount ({selectedAsset.code})
-            <input
-              type="number"
-              min="1"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              required
-              className="mt-1 px-3 py-2 rounded-lg bg-gray-700 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-          </label>
-          <Button type="submit" disabled={loading}>{loading ? "Sending…" : "Send Tip"}</Button>
-        </form>
-      )}
+            <Button type="submit" variant="outline" disabled={looking || !username.trim()}>
+              {looking ? <Spinner size="sm" label="Looking up creator" /> : "Find creator"}
+            </Button>
+          </form>
 
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+          {lookupError && <Alert severity="error">{lookupError}</Alert>}
+
+          {creator && (
+            <>
+              <p className="text-sm text-gray-400">
+                Tipping <span className="font-medium text-white">@{creator.username}</span>
+              </p>
+              <TipForm
+                destination={creator.stellarAddress}
+                username={creator.username}
+                assets={[XLM, ...(creator.acceptedAssets ?? [])]}
+              />
+            </>
+          )}
+        </>
+      )}
     </section>
   );
 }
