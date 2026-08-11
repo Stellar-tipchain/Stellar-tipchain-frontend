@@ -18,38 +18,44 @@ Creators register a username. Supporters find them on the Explore page, visit th
 
 The app uses the **Freighter** browser extension as the wallet provider. Freighter is a non-custodial Stellar wallet — the user's private key never leaves their browser.
 
+Wallet state lives in a single `WalletProvider` mounted in the root layout, so the navbar, the tip form, and the dashboard all read the same connection.
+
 When a user clicks **Connect Wallet**:
 
-1. The app calls `isConnected()` from `@stellar/freighter-api` to check if the extension is installed.
-2. It calls `setAllowed()` to prompt the user to grant the site permission.
-3. It calls `getPublicKey()` to retrieve the user's Stellar public address (e.g. `GABCD…WXYZ`).
-4. The address is stored in React state via the `useWallet` hook and displayed in the Navbar.
+1. `isConnected()` checks that the extension is installed.
+2. `setAllowed()` prompts the user to grant the site permission.
+3. `getPublicKey()` retrieves the user's Stellar public address (e.g. `GABCD…WXYZ`).
+4. `getNetwork()` reports which network Freighter is set to, and the app warns if it disagrees with `NEXT_PUBLIC_STELLAR_NETWORK`.
 
-Disconnecting clears the address from state — no server-side session is involved.
+The address is stored in `localStorage`, so a reload restores the session. Restoring uses `isAllowed()` — the one check that does not open the extension popup — meaning a returning user is reconnected silently, and a user who revoked access is quietly left disconnected. Disconnecting clears both state and storage; no server-side session is ever involved.
 
 ### 2. Sending a Tip
 
-A tip is a Stellar payment transaction:
+A tip is a Stellar payment transaction. The whole flow lives in `src/services/tips.ts`, and the UI in `src/components/TipForm.tsx`:
 
-- The sender's public key is the source account (from Freighter).
-- The recipient is looked up by username via the backend API.
-- The amount is specified in XLM (or another Stellar asset in future milestones).
-- The transaction is built using `stellar-sdk`, signed by Freighter via `signTransaction()`, and submitted to Horizon (Stellar's REST API gateway).
+1. **Validate** the amount (positive, at most 7 decimal places) and the memo (28 UTF-8 bytes, not 28 characters — an emoji costs four).
+2. **Check the balance** for the *selected asset* via Horizon, before opening the wallet popup, so an underfunded tip fails as a sentence rather than as a rejected transaction.
+3. **Build** the payment with `stellar-sdk`, reloading the source account each time so the sequence number is current.
+4. **Sign** with Freighter's `signTransaction()`.
+5. **Submit** to Horizon and return the transaction hash, linked to [stellar.expert](https://stellar.expert) so the user can verify it independently.
+6. **Record** the settled tip against the creator's profile. This is bookkeeping only — the payment is already final on-chain, so a backend failure here is never reported as a failed tip.
 
-> **Current status (30% complete):** The tip form UI is fully built and wallet-gated. Transaction signing and submission to Horizon are stubbed — they will be wired in the next milestone.
+The button reports each stage: *Preparing transaction… → Waiting for your wallet… → Submitting to the network…*
 
 ### 3. Creator Profiles
 
-Each creator has a dynamic route at `/creator/[username]`. The page shows the creator's avatar, username, bio, and a tip form. The username is used to resolve the creator's Stellar address from the backend before building the transaction.
+Each creator has a dynamic route at `/creator/[username]`. The page shows the creator's avatar, username, bio, a copyable Stellar address with an explorer link, and the tip form scoped to the assets that creator accepts.
 
 ### 4. Network Configuration
 
-The app supports both **testnet** and **mainnet** via the `NEXT_PUBLIC_STELLAR_NETWORK` environment variable. The correct Horizon URL and network passphrase are selected automatically:
+The app supports both **testnet** and **mainnet** via `NEXT_PUBLIC_STELLAR_NETWORK`. The Horizon URL, network passphrase, and explorer base URL are all derived from it in `src/config/env.ts`:
 
 | Network | Horizon URL | Passphrase |
 |---------|-------------|------------|
 | testnet | `https://horizon-testnet.stellar.org` | `Test SDF Network ; September 2015` |
 | mainnet | `https://horizon.stellar.org` | `Public Global Stellar Network ; September 2015` |
+
+On testnet, a badge in the navbar and a line in the footer make it obvious that the tips carry no real value.
 
 ---
 
@@ -58,11 +64,12 @@ The app supports both **testnet** and **mainnet** via the `NEXT_PUBLIC_STELLAR_N
 | Layer | Technology |
 |-------|-----------|
 | Framework | Next.js 14 (App Router) |
-| Language | TypeScript |
+| Language | TypeScript (strict) |
 | Styling | TailwindCSS |
 | Wallet | Freighter (`@stellar/freighter-api`) |
-| Blockchain | Stellar (Horizon REST API) |
-| API layer | Fetch-based service (`src/services/api.ts`) |
+| Blockchain | Stellar (Horizon REST API, `stellar-sdk`) |
+| Testing | Jest + React Testing Library |
+| CI | GitHub Actions (typecheck → lint → test → build) |
 
 ---
 
@@ -71,130 +78,105 @@ The app supports both **testnet** and **mainnet** via the `NEXT_PUBLIC_STELLAR_N
 ```
 src/
 ├── app/
-│   ├── layout.tsx                  # Root layout — Navbar + global styles
+│   ├── layout.tsx                  # Root layout — providers, navbar, footer
 │   ├── page.tsx                    # Landing page
+│   ├── loading.tsx                 # Route-level loading fallback
+│   ├── error.tsx                   # Route-level error boundary
 │   ├── not-found.tsx               # 404 page
-│   ├── explore/
-│   │   └── page.tsx                # Browse and search creators
-│   ├── creator/
-│   │   └── [username]/
-│   │       └── page.tsx            # Dynamic creator profile + tip form
-│   └── tips/
-│       └── page.tsx                # Standalone tip form
+│   ├── sitemap.ts / robots.ts      # SEO metadata routes
+│   ├── manifest.ts                 # Web app manifest
+│   ├── explore/page.tsx            # Browse and search creators
+│   ├── creator/[username]/page.tsx # Creator profile + tip form
+│   ├── tips/page.tsx               # Standalone tip form
+│   ├── register/page.tsx           # Creator registration
+│   ├── history/page.tsx            # Payment history for the connected wallet
+│   ├── leaderboard/page.tsx        # Creators ranked by tips received
+│   └── dashboard/page.tsx          # Balances and recent tips
 ├── components/
-│   ├── Button.tsx                  # Reusable button (solid / outline variants)
-│   ├── CreatorCard.tsx             # Creator grid card used on /explore
-│   ├── Navbar.tsx                  # Top navigation + wallet connect button
-│   └── Toast.tsx                   # Auto-dismissing feedback notification
+│   ├── WalletProvider.tsx          # App-wide wallet state
+│   ├── ToastProvider.tsx           # App-wide toast queue
+│   ├── TipForm.tsx                 # The shared tip flow
+│   ├── Button / Input / Textarea / Card / Badge / Alert / Avatar
+│   ├── AssetSelect / AmountPresets / CopyButton / TxLink / StatCard
+│   └── Spinner / Skeleton / EmptyState / PageHeader / Footer / Navbar
 ├── hooks/
-│   └── useWallet.ts                # Freighter wallet state (connect / disconnect)
+│   ├── useWallet.ts                # Reads the wallet context
+│   ├── useAsync.ts                 # Load/error state with stale-result guards
+│   ├── useDebounce.ts              # Debounced value for search
+│   ├── useLocalStorage.ts          # Hydration-safe persisted state
+│   └── useCopyToClipboard.ts       # Clipboard with graceful degradation
 ├── services/
-│   └── api.ts                      # Typed fetch wrapper for backend API calls
-├── utils/
-│   └── index.ts                    # truncateAddress, formatXLM, network constants
-└── styles/
-    └── globals.css                 # Tailwind base directives
+│   ├── api.ts                      # Backend API, timeouts and typed errors
+│   ├── horizon.ts                  # Payments, balances, account lookups
+│   ├── stellar.ts                  # Transaction building and signing
+│   └── tips.ts                     # The end-to-end tip flow
+├── lib/
+│   ├── errors.ts                   # Error types and user-facing messages
+│   └── cn.ts                       # Class-name helper
+├── utils/                          # Formatting, validation, explorer links
+├── types/                          # Shared domain types
+├── constants/                      # Routes, limits, storage keys
+├── config/env.ts                   # Environment and network configuration
+└── styles/globals.css              # Tailwind + base layer
 ```
 
 ---
 
 ## Pages
 
-### `/` — Landing
-Introduces the project with a headline, description, and two CTAs: **Explore Creators** and **Send a Tip**.
-
-### `/explore` — Explore Creators
-Displays a searchable grid of creator cards. Typing in the search box filters creators by username in real time. Each card links to the creator's profile page.
-
-### `/creator/[username]` — Creator Profile
-Shows the creator's avatar (initials-based), username, and bio. Includes a tip form with an XLM amount input. If the wallet is not connected, the button triggers the Freighter connection flow first.
-
-### `/tips` — Send a Tip
-A standalone tip form. Shows a wallet connection prompt if disconnected. Once connected, displays the sender's address and a form to enter a recipient username and XLM amount.
-
----
-
-## Components
-
-### `Button`
-Accepts `variant="solid"` (default, blue fill) or `variant="outline"` (blue border). Forwards all standard `<button>` HTML attributes including `disabled`.
-
-### `Navbar`
-Renders the site logo/link, navigation links (Explore, Tip), and a wallet button. When connected, shows the truncated Stellar address and clicking it disconnects. When disconnected, shows **Connect Wallet**.
-
-### `CreatorCard`
-A linked card showing a creator's avatar, username, and optional bio. Used in the `/explore` grid.
-
-### `Toast`
-A fixed bottom-right notification that auto-dismisses after 4 seconds. Supports `success` (green), `error` (red), and `info` (blue) types.
+| Route | What it does |
+|---|---|
+| `/` | Headline, CTAs, and a three-step explanation of the flow. |
+| `/explore` | Searchable creator grid. Search is debounced and matches username *and* bio. Retry on failure, distinct empty states for "no creators" and "no matches". |
+| `/creator/[username]` | Profile with avatar, bio, copyable address, explorer link, and the tip form scoped to that creator's accepted assets. |
+| `/tips` | Resolves the creator by username *first*, then shows the tip form — so nobody fills in an amount for a creator who does not exist. |
+| `/register` | Claims a username for the connected wallet. Validation errors appear only after the first submit attempt. |
+| `/history` | Payments to and from the connected wallet, in every asset, filterable by direction, with cursor pagination and per-payment explorer links. |
+| `/leaderboard` | Creators ranked by tips received. |
+| `/dashboard` | The creator's own view: balances per asset, tips received, and the five most recent. |
 
 ---
 
-## Hooks
+## Error Handling
 
-### `useWallet`
+Every user-facing failure passes through `toUserMessage` in `src/lib/errors.ts`, which maps Horizon result codes and API statuses to something actionable:
 
-```ts
-const { address, connected, connecting, error, connect, disconnect } = useWallet();
-```
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `address` | `string \| null` | Connected Stellar public key |
-| `connected` | `boolean` | Whether a wallet is connected |
-| `connecting` | `boolean` | True while the connection flow is in progress |
-| `error` | `string \| null` | Last connection error message |
-| `connect` | `() => Promise<void>` | Triggers Freighter connection flow |
-| `disconnect` | `() => void` | Clears wallet state |
-
----
-
-## API Service
-
-`src/services/api.ts` provides a typed fetch wrapper over the backend REST API:
-
-```ts
-api.getCreators()                  // GET /creators
-api.getCreator(username)           // GET /creators/:username
-api.sendTip(to, amount)            // POST /tips  { to, amount }
-```
-
-All calls throw on non-2xx responses. The base URL is set via `NEXT_PUBLIC_API_URL`.
+| Raw failure | What the user sees |
+|---|---|
+| `op_underfunded` | Your balance is too low to send this amount. |
+| `op_no_destination` | The recipient account does not exist on this network yet. |
+| `op_no_trust` | The recipient has not opted in to this asset. |
+| `tx_bad_seq` | Your account sequence is out of date. Refresh the page and try again. |
+| Freighter popup dismissed | You cancelled the request in your wallet. |
+| `ApiError` 409 | That name is already taken. |
+| `TimeoutError` | The request took too long. Check your connection and try again. |
 
 ---
 
 ## Setup
 
-**Clone and install:**
 ```bash
 git clone <repo-url>
 cd Stellar-tipchain-frontend
 npm install
-```
-
-**Configure environment:**
-```bash
 cp .env.example .env.local
 ```
 
-Edit `.env.local`:
-```env
-NEXT_PUBLIC_API_URL=http://localhost:4000
-NEXT_PUBLIC_STELLAR_NETWORK=testnet
-```
-
-**Install Freighter:**
-Download the [Freighter browser extension](https://www.freighter.app/) and create or import a Stellar testnet account.
+Install the [Freighter extension](https://www.freighter.app/) and create or import a Stellar **testnet** account, then fund it with [friendbot](https://laboratory.stellar.org/#account-creator?network=test).
 
 ---
 
 ## Development
 
 ```bash
-npm run dev        # Start dev server at http://localhost:3000
-npm run build      # Production build
-npm run lint       # ESLint
-npm run typecheck  # TypeScript type check (no emit)
+npm run dev            # Dev server at http://localhost:3000
+npm run build          # Production build
+npm run typecheck      # tsc --noEmit
+npm run lint           # next lint
+npm test               # Jest
+npm run test:coverage  # Jest with coverage
+npm run verify         # typecheck + lint + test
+npm run format         # Prettier
 ```
 
 ---
@@ -203,42 +185,55 @@ npm run typecheck  # TypeScript type check (no emit)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NEXT_PUBLIC_API_URL` | _(empty)_ | Backend base URL for API calls |
-| `NEXT_PUBLIC_STELLAR_NETWORK` | `testnet` | `testnet` or `mainnet` |
+| `NEXT_PUBLIC_API_URL` | _(empty)_ | Backend base URL. Empty means same origin. |
+| `NEXT_PUBLIC_STELLAR_NETWORK` | `testnet` | `testnet` or `mainnet`; anything else falls back to testnet. |
+| `NEXT_PUBLIC_SITE_URL` | _(placeholder)_ | Absolute URL used by `sitemap.xml` and `robots.txt`. |
+
+All three are `NEXT_PUBLIC_*` and are inlined into the browser bundle, so none of them may hold a secret.
 
 ---
 
-## Current Completion: ~30%
+## Current Completion: ~60%
 
 | Feature | Status |
 |---------|--------|
 | Project scaffold (Next.js, TS, Tailwind) | ✅ Done |
 | All page routes | ✅ Done |
-| Reusable UI components | ✅ Done |
+| Reusable UI component library | ✅ Done |
 | Freighter wallet connect/disconnect | ✅ Done |
-| Tip form UI (wallet-gated) | ✅ Done |
-| Creator explore + search | ✅ Done |
-| Network config (testnet/mainnet) | ✅ Done |
-| API service layer | ✅ Done |
-| Stellar transaction signing + submission | 🔲 Next milestone |
-| Backend API integration (real creator data) | 🔲 Next milestone |
-| Creator registration / onboarding flow | 🔲 Planned |
-| Tip history page | 🔲 Planned |
-| Multi-asset support (non-XLM) | 🔲 Planned |
-| Unit + E2E tests | 🔲 Planned |
+| Shared wallet state + session persistence | ✅ Done |
+| Wallet network mismatch detection | ✅ Done |
+| Stellar transaction building, signing, submission | ✅ Done |
+| Multi-asset tips (XLM + issued assets) | ✅ Done |
+| On-chain memo support | ✅ Done |
+| Pre-flight balance checks | ✅ Done |
+| Backend API layer with timeouts and typed errors | ✅ Done |
+| Horizon result-code → user message mapping | ✅ Done |
+| Creator registration | ✅ Done |
+| Explore + debounced search | ✅ Done |
+| Tip history (all assets, filters, pagination) | ✅ Done |
+| Leaderboard | ✅ Done |
+| Creator dashboard | ✅ Done |
+| Block explorer links | ✅ Done |
+| Unit + component tests (266) | ✅ Done |
+| CI pipeline | ✅ Done |
+| SEO metadata, sitemap, robots, manifest | ✅ Done |
+| Fiat (USD) value estimates | 🔲 Next milestone |
+| Server-rendered creator profiles + OG images | 🔲 Next milestone |
+| Recurring / scheduled tips | 🔲 Planned |
+| Path payments (send X, recipient receives Y) | 🔲 Planned |
+| Creator analytics over time | 🔲 Planned |
+| E2E tests (Playwright) | 🔲 Planned |
+| Light theme | 🔲 Planned |
 
 ---
 
 ## Contributing
 
-- Route-specific UI belongs in `src/app/<route>/page.tsx`.
-- Reusable UI belongs in `src/components/`.
-- API calls belong in `src/services/api.ts`.
-- Wallet logic belongs in `src/hooks/useWallet.ts`.
-- Stellar utilities (address formatting, network config) belong in `src/utils/index.ts`.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, the pre-PR checklist, and where each kind of code belongs.
 
 ---
 
 ## License
 
-MIT
+[MIT](./LICENSE)
