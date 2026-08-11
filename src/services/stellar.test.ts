@@ -27,8 +27,7 @@ jest.mock("stellar-sdk", () => {
 });
 
 function getMocks() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (StellarSdk as any).__mocks as {
+  return (StellarSdk as unknown as { __mocks: unknown }).__mocks as {
     loadAccount: jest.Mock;
     submitTransaction: jest.Mock;
   };
