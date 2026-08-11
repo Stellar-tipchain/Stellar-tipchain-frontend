@@ -1,49 +1,63 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useWallet } from "@/hooks/useWallet";
-import { getPaymentHistory, Payment } from "@/services/horizon";
+import { useAsync } from "@/hooks/useAsync";
+import { getPaymentHistory } from "@/services/horizon";
+import { formatAssetAmount, formatRelativeTime } from "@/utils/format";
+import { truncateAddress } from "@/utils";
+import { toUserMessage } from "@/lib/errors";
+import type { PaymentRecord } from "@/types";
 import Button from "@/components/Button";
+import Badge from "@/components/Badge";
+import CopyButton from "@/components/CopyButton";
+import PageHeader from "@/components/PageHeader";
+import EmptyState from "@/components/EmptyState";
+import Alert from "@/components/Alert";
+import Skeleton from "@/components/Skeleton";
+import TxLink from "@/components/TxLink";
 
-function truncate(addr: string) {
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
+type Filter = "all" | "sent" | "received";
+
+const FILTERS: { value: Filter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "received", label: "Received" },
+  { value: "sent", label: "Sent" },
+];
 
 export default function HistoryPage() {
   const { address, connected, connecting, connect } = useWallet();
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+
+  const [extraPages, setExtraPages] = useState<PaymentRecord[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState(false);
+  const [pagingError, setPagingError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
 
-  const load = useCallback(async (addr: string) => {
-    setLoading(true);
-    setError(false);
-    try {
-      const res = await getPaymentHistory(addr);
-      setPayments(res.records);
-      setNextCursor(res.nextCursor);
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const load = useCallback(async () => {
+    const page = await getPaymentHistory(address!);
+    // Reset accumulated pages whenever the first page is refetched, otherwise a
+    // wallet switch would show the previous account's payments underneath.
+    setExtraPages([]);
+    setCursor(page.nextCursor);
+    return page.records;
+  }, [address]);
 
-  useEffect(() => {
-    if (connected && address) load(address);
-  }, [connected, address, load]);
+  const { data, loading, error, reload } = useAsync(load, [address], { enabled: connected });
+
+  const payments = [...(data ?? []), ...extraPages];
+  const visible = filter === "all" ? payments : payments.filter((p) => p.direction === filter);
 
   async function loadMore() {
-    if (!address || !nextCursor) return;
+    if (!address || !cursor) return;
     setLoadingMore(true);
+    setPagingError(null);
     try {
-      const res = await getPaymentHistory(address, nextCursor);
-      setPayments((prev) => [...prev, ...res.records]);
-      setNextCursor(res.nextCursor);
-    } catch {
-      setError(true);
+      const page = await getPaymentHistory(address, cursor);
+      setExtraPages((prev) => [...prev, ...page.records]);
+      setCursor(page.nextCursor);
+    } catch (err) {
+      setPagingError(toUserMessage(err));
     } finally {
       setLoadingMore(false);
     }
@@ -52,7 +66,7 @@ export default function HistoryPage() {
   if (!connected) {
     return (
       <section className="max-w-md mx-auto px-4 py-16 flex flex-col gap-4 text-center">
-        <p className="text-gray-400">Connect your wallet to view history.</p>
+        <p className="text-gray-400">Connect your wallet to view your tip history.</p>
         <Button onClick={connect} disabled={connecting}>
           {connecting ? "Connecting…" : "Connect Wallet"}
         </Button>
@@ -62,49 +76,91 @@ export default function HistoryPage() {
 
   return (
     <section className="max-w-2xl mx-auto px-4 py-12 flex flex-col gap-6">
-      <h1 className="text-3xl font-bold">Tip History</h1>
+      <PageHeader title="Tip History" description="Payments to and from your connected wallet." />
 
-      {loading && <p className="text-gray-400">Loading…</p>}
+      <div className="flex gap-2" role="group" aria-label="Filter payments">
+        {FILTERS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={filter === option.value}
+            onClick={() => setFilter(option.value)}
+            className={`px-3 py-1 rounded-lg text-xs font-medium transition ${
+              filter === option.value
+                ? "bg-blue-600 text-white"
+                : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
 
-      {error && <p className="text-red-400">Could not load history. Please try again.</p>}
-
-      {!loading && !error && payments.length === 0 && (
-        <p className="text-gray-400">No XLM payments found for this wallet.</p>
-      )}
-
-      {payments.length > 0 && (
-        <div className="flex flex-col gap-2">
-          {payments.map((p) => (
-            <div
-              key={p.pagingToken}
-              className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3 text-sm gap-4"
-            >
-              <span className="text-gray-400 text-xs whitespace-nowrap">
-                {new Date(p.timestamp).toLocaleString()}
-              </span>
-              <span className="font-medium whitespace-nowrap">{p.amount} XLM</span>
-              <span
-                className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                  p.direction === "received"
-                    ? "bg-green-900 text-green-300"
-                    : "bg-blue-900 text-blue-300"
-                }`}
-              >
-                {p.direction === "received" ? "Received" : "Sent"}
-              </span>
-              <button
-                onClick={() => navigator.clipboard.writeText(p.counterpart)}
-                className="text-gray-400 hover:text-white transition font-mono text-xs"
-                title="Copy full address"
-              >
-                {truncate(p.counterpart)}
-              </button>
-            </div>
+      {loading && (
+        <div className="flex flex-col gap-2" aria-busy="true" aria-label="Loading history">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="w-full h-12 rounded-xl" />
           ))}
         </div>
       )}
 
-      {nextCursor && (
+      {error && (
+        <Alert severity="error" title="Could not load history">
+          <p className="mb-3">{error}</p>
+          <Button variant="outline" onClick={reload}>
+            Try again
+          </Button>
+        </Alert>
+      )}
+
+      {!loading && !error && visible.length === 0 && (
+        <EmptyState
+          title={payments.length === 0 ? "No payments yet" : `No ${filter} payments`}
+          description={
+            payments.length === 0
+              ? "Once you send or receive a tip it will show up here."
+              : "Try a different filter."
+          }
+        />
+      )}
+
+      {visible.length > 0 && (
+        <ul className="flex flex-col gap-2">
+          {visible.map((payment) => (
+            <li
+              key={payment.pagingToken}
+              className="flex items-center justify-between bg-gray-800 rounded-xl px-4 py-3 text-sm gap-4"
+            >
+              <span
+                className="text-gray-400 text-xs whitespace-nowrap"
+                title={new Date(payment.timestamp).toLocaleString()}
+              >
+                {formatRelativeTime(payment.timestamp)}
+              </span>
+              <span className="font-medium whitespace-nowrap">
+                {formatAssetAmount(payment.amount, payment.asset)}
+              </span>
+              <Badge tone={payment.direction === "received" ? "success" : "info"}>
+                {payment.direction === "received" ? "Received" : "Sent"}
+              </Badge>
+              <CopyButton
+                value={payment.counterpart}
+                label="counterparty address"
+                className="font-mono text-xs"
+              >
+                {truncateAddress(payment.counterpart, 6)}
+              </CopyButton>
+              {payment.transactionHash && (
+                <TxLink hash={payment.transactionHash} className="text-xs text-gray-400" />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {pagingError && <Alert severity="error">{pagingError}</Alert>}
+
+      {cursor && (
         <Button onClick={loadMore} disabled={loadingMore} variant="outline">
           {loadingMore ? "Loading…" : "Load more"}
         </Button>
